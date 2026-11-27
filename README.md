@@ -33,15 +33,88 @@ sudo dnf install pciutils
 sudo apt install pciutils
 ```
 
-### Enable BAR0 access (one-time)
+## Full procedure (steps)
 
+### 1. Boot to console
 ```bash
-sudo grubby --update-kernel=ALL --args="iomem=relaxed"
-# or edit GRUB and regenerate
-sudo reboot
+sudo systemctl isolate multi-user.target
 ```
 
-**Remember to remove `iomem=relaxed` when you are done.**
+### 2. Dry-run (safe, no writes)
+```bash
+cd /path/to/scripts
+sudo python3 gen2_dryrun.py
+```
+Edit the `BDF` variable at the top of the script if your card is not at `0000:04:00.0`.
+
+### 3. Stop background processes holding the GPU
+```bash
+sudo systemctl stop fah-client
+# or
+sudo killall -9 fah-client
+```
+Confirm nothing is left:
+```bash
+sudo lsof /dev/nvidia* 2>/dev/null
+```
+
+### 4. Unload the NVIDIA driver
+```bash
+sudo modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia
+lsmod | grep nvidia   # should show nothing
+```
+Or use the helper:
+```bash
+sudo ./unload_nvidia.sh
+```
+
+### 5. Run the one-shot
+```bash
+sudo python3 gen2_oneshot.py
+# type YES when prompted
+```
+
+### 6. Check the link (and optional retrain)
+```bash
+sudo lspci -vv -s 04:00.0 | grep -E 'LnkCap|LnkSta|LnkCtl|LnkCap2'
+```
+If still Gen1, try a manual retrain:
+```bash
+sudo setpci -s 04:00.0 CAP_EXP+0x30.w=2
+sudo setpci -s 03:00.0 CAP_EXP+0x30.w=2
+sudo setpci -s 03:00.0 CAP_EXP+0x10.w=0x0020
+sleep 2
+sudo lspci -vv -s 04:00.0 | grep LnkSta
+```
+(Replace `03:00.0` with your actual upstream bridge if different.)
+
+### 7. Remove + rescan if still Gen1
+```bash
+sudo sh -c 'echo 1 > /sys/bus/pci/devices/0000:04:00.0/remove'
+sleep 2
+sudo sh -c 'echo 1 > /sys/bus/pci/rescan'
+sleep 3
+sudo lspci -vv -s 04:00.0 | grep -E 'LnkCap|LnkSta'
+```
+
+### 8. Repeat if desired
+Run the one-shot again, then repeat steps 6 and 7.
+
+### 9. Restore kernel memory protection
+```bash
+sudo grubby --update-kernel=ALL --remove-args="iomem=relaxed"
+```
+
+### 10. Return to normal desktop boot
+```bash
+sudo systemctl set-default graphical.target
+sudo reboot
+```
+Or for this session only:
+```bash
+sudo modprobe nvidia
+sudo systemctl isolate graphical.target
+```
 
 ## Files
 
@@ -51,43 +124,11 @@ sudo reboot
 | `gen2_oneshot.py` | Writes the live sequence and attempts a retrain. Asks for confirmation. |
 | `unload_nvidia.sh` | Helper to stop the desktop and unload the NVIDIA driver. |
 
-## Usage
-
-### Dry-run (recommended first)
-
-```bash
-sudo python3 gen2_dryrun.py
-```
-
-Edit the `BDF` variable at the top if your card is not at `0000:04:00.0`.
-
-### One-shot (experimental)
-
-```bash
-sudo python3 gen2_oneshot.py
-# type YES when prompted
-```
-
-For the best chance of registers sticking, unload the NVIDIA driver first:
-
-```bash
-sudo systemctl stop display-manager
-sudo systemctl stop fah-client 2>/dev/null
-sudo killall -9 kwin_wayland plasmashell Xwayland fah-client 2>/dev/null
-sudo modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia
-```
-
-Then check the link:
-
-```bash
-sudo lspci -vv -s 04:00.0 | grep -E 'LnkCap|LnkSta|LnkCtl|LnkCap2'
-```
-
 ## Warnings
 
 - Requires root.
 - A bad write can make the GPU disappear until reboot.
-- `iomem=relaxed` reduces kernel memory protection while enabled.
+- `iomem=relaxed` reduces kernel memory protection while enabled. Remove it when finished.
 - These scripts only target the known P104-100 sequence. They do not flash VBIOS or change permanent fuses.
 - Results vary by motherboard / switch / VBIOS.
 
