@@ -33,6 +33,17 @@ sudo dnf install pciutils
 sudo apt install pciutils
 ```
 
+### Cleaner starting point (new step 0 / optional but recommended)
+```Bash
+# Blacklist so the driver never loads
+echo "blacklist nvidia" | sudo tee /etc/modprobe.d/blacklist-nvidia.conf
+echo "blacklist nvidia_drm" | sudo tee -a /etc/modprobe.d/blacklist-nvidia.conf
+echo "blacklist nvidia_modeset" | sudo tee -a /etc/modprobe.d/blacklist-nvidia.conf
+sudo dracut -f
+sudo systemctl set-default multi-user.target
+sudo reboot
+```
+
 ## Full procedure (steps)
 
 ### 1. Boot to console
@@ -49,9 +60,9 @@ Edit the `BDF` variable at the top of the script if your card is not at `0000:04
 
 ### 3. Stop background processes holding the GPU
 ```bash
-sudo systemctl stop fah-client
-# or
-sudo killall -9 fah-client
+sudo systemctl stop fah-client 2>/dev/null
+sudo killall -9 fah-client 2>/dev/null
+sudo lsof /dev/nvidia* 2>/dev/null   # should be empty
 ```
 Confirm nothing is left:
 ```bash
@@ -61,22 +72,29 @@ sudo lsof /dev/nvidia* 2>/dev/null
 ### 4. Unload the NVIDIA driver
 ```bash
 sudo modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia
-lsmod | grep nvidia   # should show nothing
+lsmod | grep nvidia
 ```
 Or use the helper:
 ```bash
 sudo ./unload_nvidia.sh
 ```
 
-### 5. Run the one-shot
+### 5. Find upstream bridge (do this once)
+```Bash
+lspci -t
+lspci -nn | grep -E '04:00|bridge|switch'
+```
+
+### 5a. Run the one-shot
 ```bash
 sudo python3 gen2_oneshot.py
-# type YES when prompted
+# type YES
 ```
 
 ### 6. Check the link (and optional retrain)
 ```bash
 sudo lspci -vv -s 04:00.0 | grep -E 'LnkCap|LnkSta|LnkCtl|LnkCap2'
+sudo lspci -vv -s 03:00.0 | grep -E 'LnkCap|LnkSta|LnkCtl|LnkCap2'
 ```
 If still Gen1, try a manual retrain:
 ```bash
@@ -90,9 +108,9 @@ sudo lspci -vv -s 04:00.0 | grep LnkSta
 
 ### 7. Remove + rescan if still Gen1
 ```bash
-sudo sh -c 'echo 1 > /sys/bus/pci/devices/0000:04:00.0/remove'
+echo 1 | sudo tee /sys/bus/pci/devices/0000:04:00.0/remove
 sleep 2
-sudo sh -c 'echo 1 > /sys/bus/pci/rescan'
+echo 1 | sudo tee /sys/bus/pci/rescan
 sleep 3
 sudo lspci -vv -s 04:00.0 | grep -E 'LnkCap|LnkSta'
 ```
@@ -107,6 +125,7 @@ sudo grubby --update-kernel=ALL --remove-args="iomem=relaxed"
 
 ### 10. Return to normal desktop boot
 ```bash
+sudo rm /etc/modprobe.d/blacklist-nvidia.conf
 sudo systemctl set-default graphical.target
 sudo reboot
 ```
